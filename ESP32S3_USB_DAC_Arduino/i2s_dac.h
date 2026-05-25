@@ -45,8 +45,11 @@ inline void i2s_dac_init() {
     // ── Mute GPIO ────────────────────────────────────────────
     // PCM5102A XSMT: HIGH = play, LOW = muted.
     // Remove if you tie XSMT permanently to 3.3 V.
+    // Boot state is LOW (muted) to suppress the power-on thump.
+    // The boot-mute supervisor in loop() unmutes once USB audio
+    // data is detected (or after the safety timeout expires).
     pinMode(PIN_PCM_MUTE, OUTPUT);
-    digitalWrite(PIN_PCM_MUTE, HIGH);   // start unmuted
+    digitalWrite(PIN_PCM_MUTE, LOW);    // ← MUTED at boot (changed from HIGH)
 
     // ── Create I2S TX channel ────────────────────────────────
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(

@@ -85,6 +85,24 @@ static String   s_at_buf;
 static uint32_t s_last_status_ms = 0;
 static uint32_t s_last_idle_ms   = 0;
 
+// ─── Boot-mute supervisor state ───────────────────────────────
+// After power-on the DAC output stays muted until:
+//   (a) USB audio data is detected AND at least BOOT_MUTE_MIN_MS
+//       has elapsed since boot, OR
+//   (b) BOOT_MUTE_TIMEOUT_MS elapses with no USB data detected
+//       (safety fallback — avoids being stuck muted indefinitely).
+//
+// Both timings are in milliseconds and can be adjusted here:
+//   BOOT_MUTE_MIN_MS     — minimum silence after boot before
+//                          checking for USB data (default 1 000 ms)
+//   BOOT_MUTE_TIMEOUT_MS — give up waiting and unmute anyway
+//                          (default 15 000 ms = 15 seconds)
+//
+static const uint32_t BOOT_MUTE_MIN_MS     = 1000;   // 1 s  minimum hold
+static const uint32_t BOOT_MUTE_TIMEOUT_MS = 15000;  // 15 s safety timeout
+static bool     s_boot_mute_active  = true;   // true until first unmute
+static uint32_t s_boot_mute_poll_ms = 0;      // last poll timestamp
+
 // ═══════════════════════════════════════════════════════════════
 // SETUP
 // ═══════════════════════════════════════════════════════════════
@@ -110,17 +128,26 @@ void setup() {
     g_upsample_ratio  = g_prefs.getUChar(NVS_KEY_UPSAMPLE, FIR_DEFAULT_RATIO);
 
     Serial.printf("[NVS]  BT Name  : %s\n", g_bt_name.c_str());
-    Serial.printf("[NVS]  Mute     : %s\n", g_mute_state ? "ON" : "OFF");
+    Serial.printf("[NVS]  Mute     : %s (saved)\n", g_mute_state ? "ON" : "OFF");
     Serial.printf("[NVS]  Upsample : ×%d\n", g_upsample_ratio);
 
     // ── I2S + PCM5102A ────────────────────────────────────────
     // i2s_dac_init() sets up the peripheral at USB_AUDIO_SAMPLE_RATE
-    // (48 kHz). The FIR task will reconfigure to 384 kHz on first run.
+    // (48 kHz) and holds XSMT LOW (muted) at the hardware level.
+    // We intentionally do NOT call i2s_dac_set_mute(g_mute_state)
+    // here — the boot-mute supervisor in loop() handles unmuting
+    // once USB audio data is confirmed.  This prevents the DAC
+    // output from producing any click or thump during power-on.
     Serial.println("[I2S]  Initialising PCM5102A...");
     i2s_dac_init();
-    i2s_dac_set_mute(g_mute_state);
+    // Force hardware muted regardless of NVS saved state.
+    // The boot supervisor will restore g_mute_state afterwards.
+    i2s_dac_set_mute(true);
     Serial.printf("[I2S]  BCK=GPIO%d  WS=GPIO%d  DOUT=GPIO%d  MUTE=GPIO%d\n",
                   PIN_I2S_BCK, PIN_I2S_WS, PIN_I2S_DOUT, PIN_PCM_MUTE);
+    Serial.printf("[MUTE] Boot-mute active. Will unmute after USB audio detected "
+                  "(min %lu ms, timeout %lu ms).\n",
+                  BOOT_MUTE_MIN_MS, BOOT_MUTE_TIMEOUT_MS);
 
     // ── FIR Upsampler (Core 0 task + inter-core queue) ────────
     Serial.printf("[FIR]  Init upsampler ×%d (USB %d Hz → %u Hz)\n",
@@ -154,7 +181,50 @@ void setup() {
 void loop() {
     uint32_t now = millis();
 
-    // ── 1. Serial AT command parser ───────────────────────────
+    // ── 1. Boot-mute supervisor ───────────────────────────────
+    // Runs on every loop iteration until s_boot_mute_active is
+    // cleared.  Polls every 100 ms to keep CPU load negligible.
+    //
+    // State machine:
+    //   ACTIVE + < MIN_MS        → stay muted, do nothing yet
+    //   ACTIVE + ≥ MIN_MS        → poll USB; unmute if data seen
+    //   ACTIVE + ≥ TIMEOUT_MS    → unmute unconditionally (safety)
+    //   INACTIVE                 → skip this block entirely
+    if (s_boot_mute_active) {
+        if (now - s_boot_mute_poll_ms >= 100) {  // poll every 100 ms
+            s_boot_mute_poll_ms = now;
+
+            // Safety timeout: unmute no matter what after timeout
+            if (now >= BOOT_MUTE_TIMEOUT_MS) {
+                Serial.println("[MUTE] Boot-mute timeout — unmuting (no USB data received).");
+                s_boot_mute_active = false;
+                // Restore the user's saved mute preference.
+                // If the user had AT+MUTE=ON saved, keep it muted.
+                i2s_dac_set_mute(g_mute_state);
+                g_audio_source = "Idle";
+            }
+            // Minimum hold elapsed — check for USB audio data
+            else if (now >= BOOT_MUTE_MIN_MS) {
+                if (usb_audio_is_streaming()) {
+                    // USB data confirmed — safe to open the analogue output.
+                    // Only unmute if the user hasn't saved AT+MUTE=ON.
+                    if (!g_mute_state) {
+                        Serial.println("[MUTE] USB audio detected — unmuting.");
+                        i2s_dac_set_mute(false);
+                    } else {
+                        Serial.println("[MUTE] USB audio detected — keeping muted (AT+MUTE=ON saved).");
+                    }
+                    usb_audio_reset_active();  // clear flag; normal tracking resumes
+                    s_boot_mute_active = false;
+                    g_audio_source     = "USB";
+                    s_last_idle_ms     = now;
+                }
+                // else: still waiting — stay muted, loop again in 100 ms
+            }
+        }
+    }
+
+    // ── 2. Serial AT command parser ───────────────────────────
     // Accumulate characters until CR or LF, then dispatch.
     // Test: open Serial Monitor (CR+LF line ending), type AT, Enter.
     while (Serial.available()) {
@@ -171,7 +241,7 @@ void loop() {
         }
     }
 
-    // ── 2. Periodic BLE status push to Android app ────────────
+    // ── 3. Periodic BLE status push to Android app ────────────
     // JSON format parsed by the PWA to update live UI.
     if (g_ble_connected &&
         (now - s_last_status_ms >= BLE_STATUS_INTERVAL_MS)) {
@@ -206,7 +276,7 @@ void loop() {
         ble_send(status);
     }
 
-    // ── 3. Yield — keeps USB stack and BLE stack healthy ──────
+    // ── 4. Yield — keeps USB stack and BLE stack healthy ──────
     // The FIR DMA and TinyUSB run in separate FreeRTOS tasks.
     // A small delay here yields the Core 1 time-slice back to
     // the scheduler so those tasks get CPU time.
