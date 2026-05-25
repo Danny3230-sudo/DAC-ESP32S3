@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#050c14"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>ESP32 DAC Control</title>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png"/>
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png"/>
+<style>
+/* ══════════════════════════════════════════════════════
+   TOKENS — Dark / Cyan-electric
+   ══════════════════════════════════════════════════════ */
+:root {
+  --void:   #030a10; --panel:  #080f1a; --card:   #0c1726;
+  --input:  #060d17; --bdr:    #0d2540; --bdrhl:  #0e3860;
+  --cyan:   #00e5ff; --cyand:  #007a99; --cyanglow: rgba(0,229,255,0.18);
+  --cyanglow2: rgba(0,229,255,0.06); --blue: #2979ff;
+  --hi: #e8f4ff; --mid: #7eb8d4; --lo: #3a6070;
+  --err: #ff4d6a; --ok: #00e5a0; --warn: #ffaa00;
+  --rad: 10px; --radsm: 6px;
+  --mono: 'JetBrains Mono','Fira Mono','Consolas',monospace;
+  --ui:   'Rajdhani','Orbitron','Segoe UI',sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--void);color:var(--hi);
+  font-family:var(--ui);overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:repeating-linear-gradient(0deg,transparent 0,transparent 3px,
+  rgba(0,229,255,.012) 3px,rgba(0,229,255,.012) 4px)}
+
+/* ── Layout ─────────────────────────────────────────── */
+#app{position:relative;z-index:1;display:flex;flex-direction:column;
+  height:100dvh;max-width:480px;margin:0 auto;overflow:hidden}
+
+/* ── Header ─────────────────────────────────────────── */
+header{height:54px;flex-shrink:0;display:flex;align-items:center;gap:10px;
+  padding:0 14px;background:linear-gradient(180deg,#071422,#050d17);
+  border-bottom:1px solid var(--bdr);box-shadow:0 2px 20px rgba(0,0,0,.6)}
+.logo-dot{width:9px;height:9px;border-radius:50%;background:var(--cyan);
+  box-shadow:0 0 8px var(--cyan),0 0 16px var(--cyand);
+  animation:pulse-dot 2s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{opacity:1;box-shadow:0 0 8px var(--cyan),0 0 16px var(--cyand)}
+  50%{opacity:.5;box-shadow:0 0 4px var(--cyand)}}
+header h1{font-size:14px;font-weight:700;letter-spacing:2px;color:var(--cyan);
+  text-transform:uppercase;flex:1;text-shadow:0 0 12px var(--cyand)}
+#ble-badge{font-size:9px;font-weight:600;font-family:var(--mono);padding:3px 7px;
+  border-radius:20px;letter-spacing:1px;border:1px solid var(--cyand);color:var(--cyand);transition:all .4s}
+#ble-badge.connected{color:var(--cyan);border-color:var(--cyan);box-shadow:0 0 8px var(--cyanglow)}
+#hdr-connect{padding:6px 11px;font-size:10px}
+
+/* ── Status bar ─────────────────────────────────────── */
+#status-bar{display:grid;grid-template-columns:repeat(5,1fr);flex-shrink:0;
+  background:var(--panel);border-bottom:1px solid var(--bdr);padding:7px 12px;gap:2px}
+.stat{display:flex;flex-direction:column;gap:1px}
+.stat-lbl{font-size:8px;letter-spacing:1.4px;color:var(--lo);text-transform:uppercase}
+.stat-val{font-size:12px;font-weight:600;font-family:var(--mono);color:var(--mid);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat-val.active{color:var(--cyan);text-shadow:0 0 8px var(--cyanglow)}
+.stat-val.warn{color:var(--warn)}
+
+/* ── Tabs ───────────────────────────────────────────── */
+#tab-bar{display:flex;flex-shrink:0;height:50px;background:var(--panel);
+  border-bottom:1px solid var(--bdr)}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;border:none;background:none;cursor:pointer;color:var(--lo);font-size:8.5px;
+  letter-spacing:1px;text-transform:uppercase;font-family:var(--ui);font-weight:600;
+  border-bottom:2px solid transparent;transition:all .2s;padding-top:2px}
+.tab svg{width:17px;height:17px}
+.tab.active{color:var(--cyan);border-bottom-color:var(--cyan);text-shadow:0 0 8px var(--cyanglow)}
+.tab:not(.active):hover{color:var(--mid)}
+
+/* ── Pages ──────────────────────────────────────────── */
+#pages{flex:1;overflow:hidden;position:relative}
+.page{position:absolute;inset:0;overflow-y:auto;padding:12px;
+  display:none;flex-direction:column;gap:10px;
+  scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.page.visible{display:flex}
+
+/* ── Cards ──────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--rad);
+  padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.card-title{font-size:9.5px;letter-spacing:2px;color:var(--cyand);
+  text-transform:uppercase;margin-bottom:10px;font-weight:700}
+
+/* ── Buttons ────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;
+  padding:9px 16px;border-radius:var(--radsm);border:none;font-family:var(--ui);
+  font-weight:600;font-size:12px;letter-spacing:1px;cursor:pointer;
+  transition:all .15s;text-transform:uppercase}
+.btn-primary{background:linear-gradient(135deg,#006080,#003d60);color:var(--cyan);
+  border:1px solid var(--cyand);box-shadow:0 0 12px rgba(0,96,128,.4)}
+.btn-primary:hover{box-shadow:0 0 20px rgba(0,229,255,.25);border-color:var(--cyan)}
+.btn-primary:active{transform:scale(.97)}
+.btn-danger{background:linear-gradient(135deg,#3a0a14,#200510);color:var(--err);border:1px solid #5a1020}
+.btn-danger:hover{box-shadow:0 0 16px rgba(255,77,106,.25)}
+.btn-ghost{background:transparent;color:var(--mid);border:1px solid var(--bdrhl)}
+.btn-ghost:hover{color:var(--cyan);border-color:var(--cyand)}
+.btn-full{width:100%}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+
+/* ── Mute button ────────────────────────────────────── */
+#mute-btn{width:100%;padding:15px;font-size:14px;border-radius:var(--rad);
+  border:1px solid var(--bdrhl);background:linear-gradient(135deg,#0a1f30,#051018);
+  color:var(--mid);cursor:pointer;transition:all .2s;font-family:var(--ui);
+  font-weight:700;letter-spacing:2px;text-transform:uppercase}
+#mute-btn.muted{background:linear-gradient(135deg,#1a0010,#0a0008);color:var(--err);
+  border-color:#5a0020;box-shadow:0 0 20px rgba(255,77,106,.2)}
+#mute-btn:not(.muted){color:var(--ok);border-color:#005530;box-shadow:0 0 16px rgba(0,229,160,.1)}
+
+/* ── Upsample control card ──────────────────────────── */
+.ratio-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.ratio-btn{background:var(--input);border:1px solid var(--bdrhl);color:var(--mid);
+  padding:10px 6px;border-radius:var(--radsm);font-family:var(--ui);font-weight:700;
+  font-size:12px;cursor:pointer;transition:all .2s;text-align:center;
+  display:flex;flex-direction:column;gap:3px;align-items:center}
+.ratio-btn .ratio-label{font-size:15px;letter-spacing:1px}
+.ratio-btn .ratio-sub{font-size:9px;color:var(--lo);font-family:var(--mono)}
+.ratio-btn.selected{background:linear-gradient(135deg,#003850,#001c30);
+  color:var(--cyan);border-color:var(--cyan);
+  box-shadow:0 0 14px var(--cyanglow),inset 0 0 20px var(--cyanglow2)}
+.ratio-btn.selected .ratio-sub{color:var(--cyand)}
+
+/* FIR chain diagram */
+.fir-chain{display:flex;align-items:center;gap:4px;margin-top:10px;
+  background:var(--input);border:1px solid var(--bdr);border-radius:var(--radsm);
+  padding:8px 10px;overflow-x:auto}
+.fir-box{background:var(--panel);border:1px solid var(--bdrhl);border-radius:4px;
+  padding:4px 8px;font-size:10px;font-family:var(--mono);color:var(--mid);
+  white-space:nowrap;flex-shrink:0}
+.fir-box.hl{border-color:var(--cyand);color:var(--cyan)}
+.fir-arrow{color:var(--lo);font-size:11px;flex-shrink:0}
+
+/* ── Inputs ─────────────────────────────────────────── */
+input[type=text],input[type=url],input[type=password],input[type=search]{
+  width:100%;background:var(--input);border:1px solid var(--bdrhl);
+  color:var(--hi);padding:9px 11px;border-radius:var(--radsm);
+  font-family:var(--mono);font-size:12px;outline:none;transition:border-color .2s}
+input:focus{border-color:var(--cyand);box-shadow:0 0 0 2px var(--cyanglow2)}
+.field-row{display:flex;gap:7px;align-items:flex-end}
+.field-row input{flex:1}
+label{font-size:9.5px;letter-spacing:1px;color:var(--lo);
+  text-transform:uppercase;display:block;margin-bottom:4px}
+
+/* ── Terminal ───────────────────────────────────────── */
+#terminal{background:var(--void);border:1px solid var(--bdr);border-radius:var(--radsm);
+  padding:9px;font-family:var(--mono);font-size:11px;line-height:1.7;height:200px;
+  overflow-y:auto;color:var(--mid);scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.term-tx{color:var(--cyan)} .term-rx{color:var(--ok)} .term-err{color:var(--err)} .term-sys{color:var(--lo);font-style:italic}
+.term-input-row{display:flex;gap:7px;margin-top:7px;align-items:center}
+.term-prompt{font-family:var(--mono);color:var(--cyand);font-size:12px}
+#term-input{flex:1;background:var(--input);border:1px solid var(--bdrhl);color:var(--cyan);
+  padding:7px 9px;border-radius:var(--radsm);font-family:var(--mono);font-size:11px;outline:none}
+#term-input:focus{border-color:var(--cyand)}
+.cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
+.cmd-chip{background:var(--input);border:1px solid var(--bdrhl);color:var(--mid);
+  padding:5px 7px;border-radius:var(--radsm);font-family:var(--mono);font-size:10px;
+  cursor:pointer;text-align:left;transition:all .15s;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cmd-chip:hover{border-color:var(--cyand);color:var(--cyan)}
+.cmd-section{font-size:9px;letter-spacing:1.5px;color:var(--lo);
+  text-transform:uppercase;margin-top:8px;margin-bottom:3px}
+
+/* ── NAS / player ───────────────────────────────────── */
+#mini-player{display:none;background:var(--card);border:1px solid var(--bdrhl);
+  border-radius:var(--rad);padding:11px 13px;margin-bottom:2px;
+  box-shadow:0 0 20px var(--cyanglow2)}
+#mini-player.visible{display:block}
+.player-title{font-size:13px;font-weight:700;color:var(--hi)}
+.player-artist{font-size:10px;color:var(--mid);margin-bottom:9px}
+.player-controls{display:flex;align-items:center;gap:7px}
+#player-seek{flex:1;-webkit-appearance:none;height:3px;background:var(--bdrhl);
+  border-radius:2px;outline:none;cursor:pointer}
+#player-seek::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
+  border-radius:50%;background:var(--cyan);cursor:pointer;box-shadow:0 0 8px var(--cyan)}
+.ctrl-btn{background:none;border:none;color:var(--mid);cursor:pointer;
+  padding:5px;border-radius:50%;transition:all .15s;display:flex;align-items:center}
+.ctrl-btn:hover{color:var(--cyan);background:var(--cyanglow2)}
+.ctrl-btn.main{color:var(--cyan);width:36px;height:36px;border:1px solid var(--cyand);
+  border-radius:50%;box-shadow:0 0 10px var(--cyanglow)}
+.player-time{font-size:10px;font-family:var(--mono);color:var(--lo)}
+audio{display:none}
+
+.server-type-row{display:flex;gap:5px;margin-bottom:9px}
+.type-btn{flex:1;padding:7px 4px;font-size:10px}
+.track-list{display:flex;flex-direction:column;gap:3px;max-height:250px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.track-item{display:flex;align-items:center;gap:8px;padding:7px 9px;
+  border-radius:var(--radsm);cursor:pointer;transition:background .15s;
+  border:1px solid transparent}
+.track-item:hover{background:var(--panel);border-color:var(--bdr)}
+.track-item.playing{background:var(--card);border-color:var(--cyand);
+  box-shadow:0 0 10px var(--cyanglow2)}
+.track-num{font-size:10px;color:var(--lo);font-family:var(--mono);width:20px;text-align:right}
+.track-info{flex:1;min-width:0}
+.track-title{font-size:12px;color:var(--hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.track-meta{font-size:9.5px;color:var(--lo)}
+.track-dur{font-size:10px;color:var(--lo);font-family:var(--mono)}
+.play-eq{display:none;gap:2px;align-items:flex-end;height:13px}
+.track-item.playing .play-eq{display:flex}
+.track-item.playing .track-num{display:none}
+.eq-bar{width:3px;background:var(--cyan);border-radius:2px;
+  animation:eq-bounce .6s ease-in-out infinite alternate}
+.eq-bar:nth-child(2){animation-delay:.15s}
+.eq-bar:nth-child(3){animation-delay:.3s}
+@keyframes eq-bounce{from{height:3px}to{height:13px;opacity:.6}}
+
+/* ── Settings ───────────────────────────────────────── */
+.setting-row{display:flex;align-items:center;justify-content:space-between;
+  padding:9px 0;border-bottom:1px solid var(--bdr)}
+.setting-row:last-child{border-bottom:none}
+.setting-label{font-size:12px;color:var(--mid)}
+.setting-value{font-size:11px;font-family:var(--mono);color:var(--cyan)}
+
+/* ── Info box ───────────────────────────────────────── */
+.info-box{background:var(--input);border-left:2px solid var(--cyand);
+  padding:9px 11px;border-radius:0 var(--radsm) var(--radsm) 0;
+  font-size:11.5px;line-height:1.7;color:var(--mid)}
+.info-box a{color:var(--cyan);text-decoration:none}
+.info-box a:hover{text-decoration:underline}
+
+/* ── Toasts ─────────────────────────────────────────── */
+#toast-area{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+  display:flex;flex-direction:column;gap:5px;z-index:9999;
+  width:calc(100% - 28px);max-width:440px}
+.toast{padding:9px 14px;border-radius:var(--radsm);font-size:12px;font-weight:600;
+  text-align:center;animation:toast-in .25s ease;border:1px solid}
+.toast.ok{background:#001a10;border-color:#005530;color:var(--ok)}
+.toast.err{background:#1a0006;border-color:#5a0020;color:var(--err)}
+.toast.info{background:#001826;border-color:var(--cyand);color:var(--cyan)}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.credit{font-size:9px;color:var(--lo);text-align:center;letter-spacing:1px;padding:5px 0 2px}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo-dot"></div>
+    <h1>ESP32 DAC</h1>
+    <div id="ble-badge">● DISC</div>
+    <button class="btn btn-primary" id="hdr-connect" onclick="toggleBLE()">CONNECT</button>
+  </header>
+
+  <!-- STATUS BAR -->
+  <div id="status-bar">
+    <div class="stat"><div class="stat-lbl">Source</div><div class="stat-val" id="st-source">—</div></div>
+    <div class="stat"><div class="stat-lbl">USB In</div><div class="stat-val" id="st-inrate">—</div></div>
+    <div class="stat"><div class="stat-lbl">DAC Out</div><div class="stat-val active" id="st-outrate">—</div></div>
+    <div class="stat"><div class="stat-lbl">Upsample</div><div class="stat-val" id="st-upsample">—</div></div>
+    <div class="stat"><div class="stat-lbl">Mute</div><div class="stat-val" id="st-mute">—</div></div>
+  </div>
+
+  <!-- TABS -->
+  <div id="tab-bar">
+    <button class="tab active" onclick="showPage('ctrl')" data-tab="ctrl">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 1 1 4.93 19.07"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      Control
+    </button>
+    <button class="tab" onclick="showPage('fir')" data-tab="fir">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12h2M20 12h2M6 6l3 6-3 6M18 6l-3 6 3 6"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+      FIR DSP
+    </button>
+    <button class="tab" onclick="showPage('terminal')" data-tab="terminal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m8 10-2 2 2 2M13 10l2 2-2 2M11 10l-1 4"/></svg>
+      Terminal
+    </button>
+    <button class="tab" onclick="showPage('nas')" data-tab="nas">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      Music
+    </button>
+    <button class="tab" onclick="showPage('settings')" data-tab="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 1 1 4.93 19.07M12 1v3M12 20v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M1 12h3M20 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
+      Settings
+    </button>
+  </div>
+
+  <div id="pages">
+
+    <!-- ─── CONTROL ─────────────────────────────────── -->
+    <div class="page visible" id="page-ctrl">
+      <button id="mute-btn" onclick="toggleMute()">▶ UNMUTED — AUDIO ACTIVE</button>
+
+      <!-- BLE Name -->
+      <div class="card">
+        <div class="card-title">BLE Device Name</div>
+        <div class="field-row">
+          <input type="text" id="bt-name-input" placeholder="ESP32S3-DAC" maxlength="20"/>
+          <button class="btn btn-primary" onclick="setBTName()">SET</button>
+        </div>
+        <div style="margin-top:7px;font-size:10px;color:var(--lo)">Current: <span id="current-bt-name" style="color:var(--cyand)">—</span> · Restart to apply name change</div>
+      </div>
+
+      <!-- Audio info -->
+      <div class="card">
+        <div class="card-title">Audio Information</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+          <div><div class="stat-lbl">USB Input</div><div class="stat-val active" id="info-inrate" style="font-size:16px">—</div></div>
+          <div><div class="stat-lbl">DAC Output</div><div class="stat-val active" id="info-outrate" style="font-size:16px">—</div></div>
+          <div><div class="stat-lbl">Upsample</div><div class="stat-val active" id="info-upsample" style="font-size:16px">—</div></div>
+          <div><div class="stat-lbl">Bit Depth</div><div class="stat-val" id="info-bits" style="font-size:16px">—</div></div>
+          <div><div class="stat-lbl">Channels</div><div class="stat-val" style="font-size:16px">Stereo</div></div>
+          <div><div class="stat-lbl">Source</div><div class="stat-val" id="info-source" style="font-size:16px">—</div></div>
+        </div>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="card">
+        <div class="card-title">Quick Actions</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+          <button class="btn btn-ghost" onclick="sendAT('AT+STATUS')">Poll Status</button>
+          <button class="btn btn-ghost" onclick="sendAT('AT+INFO')">Device Info</button>
+          <button class="btn btn-ghost" onclick="sendAT('AT+RATE?')">Query Rate</button>
+          <button class="btn btn-danger" onclick="confirmRestart()">Restart Device</button>
+        </div>
+      </div>
+      <div class="credit">ESP32 DAC Controller · Danny Liu</div>
+    </div>
+
+    <!-- ─── FIR DSP PAGE ─────────────────────────────── -->
+    <div class="page" id="page-fir">
+
+      <!-- Upsample ratio selector -->
+      <div class="card">
+        <div class="card-title">Upsampling Ratio</div>
+        <div class="ratio-grid">
+          <button class="ratio-btn" id="rb-off" onclick="setUpsample('OFF')">
+            <span class="ratio-label">OFF</span>
+            <span class="ratio-sub">Passthrough</span>
+            <span class="ratio-sub">48 kHz · 16-bit</span>
+          </button>
+          <button class="ratio-btn" id="rb-4x" onclick="setUpsample('4X')">
+            <span class="ratio-label">4×</span>
+            <span class="ratio-sub">FIR Upsample</span>
+            <span class="ratio-sub">48→192 kHz</span>
+          </button>
+          <button class="ratio-btn selected" id="rb-8x" onclick="setUpsample('8X')">
+            <span class="ratio-label">8×</span>
+            <span class="ratio-sub">FIR Upsample</span>
+            <span class="ratio-sub">48→384 kHz</span>
+          </button>
+        </div>
+
+        <!-- Signal chain diagram -->
+        <div class="fir-chain">
+          <div class="fir-box">PC / USB</div>
+          <div class="fir-arrow">→</div>
+          <div class="fir-box">48 kHz<br>16-bit</div>
+          <div class="fir-arrow">→</div>
+          <div class="fir-box hl" id="chain-fir">FIR ×8<br>128-tap</div>
+          <div class="fir-arrow">→</div>
+          <div class="fir-box hl" id="chain-out">384 kHz<br>32-bit</div>
+          <div class="fir-arrow">→</div>
+          <div class="fir-box">PCM5102A<br>Analogue</div>
+        </div>
+
+        <div style="margin-top:8px;font-size:10px;color:var(--lo);line-height:1.7">
+          Setting is persisted — survives reboot. Filter rebuilds on Core 0; no audio gap.
+        </div>
+      </div>
+
+      <!-- FIR filter specs -->
+      <div class="card">
+        <div class="card-title">FIR Filter Specifications</div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Architecture</div>
+          <div class="setting-value">Polyphase FIR</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Total taps (8×)</div>
+          <div class="setting-value">128  (8 phases × 16)</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Total taps (4×)</div>
+          <div class="setting-value">64  (4 phases × 16)</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Window</div>
+          <div class="setting-value">Kaiser  β = 7.0</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Stop-band attenuation</div>
+          <div class="setting-value">~80 dB</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Passband cutoff</div>
+          <div class="setting-value">0 – 22.05 kHz</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">FIR runs on</div>
+          <div class="setting-value">Core 0 (dedicated)</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">CPU load (8×, 48 kHz)</div>
+          <div class="setting-value">~12 % of Core 0</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">I2S clock (8×)</div>
+          <div class="setting-value">24.576 MHz BCK</div>
+        </div>
+        <div class="setting-row" style="padding:6px 0">
+          <div class="setting-label">Output bit depth</div>
+          <div class="setting-value" id="fir-bits-val">32-bit (8× / 4×)</div>
+        </div>
+      </div>
+
+      <!-- Increase quality note -->
+      <div class="card">
+        <div class="card-title">Tuning Filter Quality</div>
+        <div class="info-box">
+          To raise stop-band attenuation beyond 80 dB, increase <code style="color:var(--cyan)">FIR_MAX_K</code> in <code style="color:var(--cyan)">config.h</code>:<br><br>
+          K=16 → ~80 dB &nbsp; (default, ~12% Core 0)<br>
+          K=24 → ~100 dB  &nbsp;(~18% Core 0)<br>
+          K=32 → ~120 dB  &nbsp;(~24% Core 0)<br><br>
+          Also adjust <code style="color:var(--cyan)">FIR_KAISER_BETA</code> to match (β=9.0 for 100 dB).
+          ESP32-S3 has headroom for K=32 without audio dropouts.
+        </div>
+      </div>
+
+      <div class="credit">ESP32 DAC Controller · Danny Liu</div>
+    </div>
+
+    <!-- ─── TERMINAL ──────────────────────────────────── -->
+    <div class="page" id="page-terminal">
+      <div class="card" style="flex:1;display:flex;flex-direction:column;gap:7px">
+        <div class="card-title">AT Command Terminal</div>
+        <div id="terminal"><div class="term-sys">— BLE Terminal ready. Connect device first. —</div></div>
+        <div class="term-input-row">
+          <span class="term-prompt">AT</span>
+          <input type="text" id="term-input" placeholder="+HELP" autocapitalize="none"
+            autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')sendTerminal()"/>
+          <button class="btn btn-primary" onclick="sendTerminal()" style="padding:7px 11px">▶</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Quick Commands</div>
+        <div class="cmd-section">General</div>
+        <div class="cmd-grid">
+          <button class="cmd-chip" onclick="quickCmd('AT')">AT — ping</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+HELP')">AT+HELP</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+INFO')">AT+INFO</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+STATUS')">AT+STATUS (JSON)</button>
+        </div>
+        <div class="cmd-section">FIR Upsampler</div>
+        <div class="cmd-grid">
+          <button class="cmd-chip" onclick="quickCmd('AT+UPSAMPLE=8X')">AT+UPSAMPLE=8X</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+UPSAMPLE=4X')">AT+UPSAMPLE=4X</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+UPSAMPLE=OFF')">AT+UPSAMPLE=OFF</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+UPSAMPLE?')">AT+UPSAMPLE?</button>
+        </div>
+        <div class="cmd-section">Audio / DAC</div>
+        <div class="cmd-grid">
+          <button class="cmd-chip" onclick="quickCmd('AT+MUTE=ON')">AT+MUTE=ON</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+MUTE=OFF')">AT+MUTE=OFF</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+MUTE?')">AT+MUTE?</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+RATE?')">AT+RATE?</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+SOURCE?')">AT+SOURCE?</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+BTNAME?')">AT+BTNAME?</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+BLEOFF')">AT+BLEOFF</button>
+          <button class="cmd-chip" onclick="quickCmd('AT+BLEON')">AT+BLEON</button>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn btn-ghost btn-full" onclick="clearTerminal()">Clear Terminal</button>
+        </div>
+      </div>
+      <div class="credit">ESP32 DAC Controller · Danny Liu</div>
+    </div>
+
+    <!-- ─── NAS / MUSIC ───────────────────────────────── -->
+    <div class="page" id="page-nas">
+      <div id="mini-player">
+        <div class="player-title" id="player-title">—</div>
+        <div class="player-artist" id="player-artist">—</div>
+        <div class="player-controls">
+          <button class="ctrl-btn" onclick="playerPrev()"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+          <button class="ctrl-btn main" id="play-pause-btn" onclick="playerToggle()"><svg id="pp-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+          <button class="ctrl-btn" onclick="playerNext()"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M18 6h-2v12h2zm-3.5 6L6 6v12z"/></svg></button>
+          <input type="range" id="player-seek" min="0" max="100" value="0" oninput="playerSeek(this.value)"/>
+          <span class="player-time" id="player-time">0:00 / 0:00</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Music Server (NAS)</div>
+        <div class="server-type-row">
+          <button class="btn btn-ghost type-btn" id="type-navidrome" onclick="setServerType('navidrome')">Navidrome</button>
+          <button class="btn btn-ghost type-btn" id="type-jellyfin"  onclick="setServerType('jellyfin')">Jellyfin</button>
+          <button class="btn btn-ghost type-btn" id="type-subsonic"  onclick="setServerType('subsonic')">Subsonic</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div><label>Server URL</label><input type="url" id="nas-url" placeholder="http://192.168.1.x:4533" autocapitalize="none"/></div>
+          <div><label>Username</label><input type="text" id="nas-user" placeholder="admin" autocapitalize="none"/></div>
+          <div><label>Password</label><input type="password" id="nas-pass" placeholder="••••••"/></div>
+          <button class="btn btn-primary btn-full" onclick="connectNAS()">CONNECT TO SERVER</button>
+        </div>
+      </div>
+
+      <div class="card" id="search-card" style="display:none">
+        <div class="card-title">Browse Library</div>
+        <div class="field-row">
+          <input type="search" id="nas-search" placeholder="Search tracks, albums, artists…" autocapitalize="none"/>
+          <button class="btn btn-primary" onclick="nasSearch()">GO</button>
+        </div>
+        <div style="display:flex;gap:5px;margin-top:7px;flex-wrap:wrap">
+          <button class="btn btn-ghost" onclick="nasGetRandom()" style="font-size:10px;padding:5px 9px">Random</button>
+          <button class="btn btn-ghost" onclick="nasGetRecent()" style="font-size:10px;padding:5px 9px">Recent</button>
+          <button class="btn btn-ghost" onclick="nasGetStarred()" style="font-size:10px;padding:5px 9px">Starred ★</button>
+        </div>
+      </div>
+
+      <div class="card" id="tracks-card" style="display:none">
+        <div class="card-title" id="tracks-heading">Tracks</div>
+        <div class="track-list" id="track-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Tidal</div>
+        <div class="info-box">
+          Tidal streams use DRM — direct browser playback is not possible.<br><br>
+          <strong>Best workflow:</strong> Use the official Tidal app → set output to the ESP32 USB Audio device (if phone supports USB audio out). Or use <a href="https://tidal.com/connect" target="_blank">TIDAL Connect</a> with a WiFi streaming extension to the ESP32 firmware.
+        </div>
+      </div>
+      <div class="credit">ESP32 DAC Controller · Danny Liu</div>
+    </div>
+
+    <!-- ─── SETTINGS ──────────────────────────────────── -->
+    <div class="page" id="page-settings">
+      <div class="card">
+        <div class="card-title">BLE Connection</div>
+        <div class="setting-row"><div class="setting-label">Status</div><div class="setting-value" id="set-ble-status">Disconnected</div></div>
+        <div class="setting-row"><div class="setting-label">Device Name</div><div class="setting-value" id="set-ble-name">—</div></div>
+        <div style="margin-top:10px"><button class="btn btn-primary btn-full" onclick="toggleBLE()">CONNECT / DISCONNECT</button></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Hardware — GPIO Map</div>
+        <div class="setting-row"><div class="setting-label">I2S BCK</div><div class="setting-value">GPIO 14</div></div>
+        <div class="setting-row"><div class="setting-label">I2S WS (LRCK)</div><div class="setting-value">GPIO 11</div></div>
+        <div class="setting-row"><div class="setting-label">I2S DOUT</div><div class="setting-value">GPIO 13</div></div>
+        <div class="setting-row"><div class="setting-label">PCM5102A XSMT</div><div class="setting-value">GPIO 10</div></div>
+        <div class="setting-row"><div class="setting-label">USB D- / D+</div><div class="setting-value">GPIO 19 / 20</div></div>
+        <div class="setting-row"><div class="setting-label">DAC IC</div><div class="setting-value">PCM5102A</div></div>
+        <div class="setting-row"><div class="setting-label">Max output rate</div><div class="setting-value">384 kHz (8× FIR)</div></div>
+        <div class="setting-row"><div class="setting-label">I2S BCK @ 384 kHz</div><div class="setting-value">24.576 MHz</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">FIR Parameters</div>
+        <div class="setting-row"><div class="setting-label">Architecture</div><div class="setting-value">Polyphase FIR</div></div>
+        <div class="setting-row"><div class="setting-label">Taps per phase</div><div class="setting-value">16 (K)</div></div>
+        <div class="setting-row"><div class="setting-label">Max phases (L)</div><div class="setting-value">8</div></div>
+        <div class="setting-row"><div class="setting-label">Window β</div><div class="setting-value">7.0 (Kaiser)</div></div>
+        <div class="setting-row"><div class="setting-label">Stopband</div><div class="setting-value">~80 dB</div></div>
+        <div class="setting-row"><div class="setting-label">FIR CPU core</div><div class="setting-value">Core 0</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">NAS</div>
+        <div class="setting-row"><div class="setting-label">Server</div><div class="setting-value" id="set-nas-server">Not configured</div></div>
+        <div class="setting-row"><div class="setting-label">Type</div><div class="setting-value" id="set-nas-type">—</div></div>
+        <div style="margin-top:10px"><button class="btn btn-danger btn-full" onclick="clearNASConfig()">Clear NAS Config</button></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">About</div>
+        <div class="setting-row"><div class="setting-label">App Version</div><div class="setting-value">2.0.0</div></div>
+        <div class="setting-row"><div class="setting-label">Author</div><div class="setting-value" style="color:var(--mid)">Danny Liu</div></div>
+        <div class="setting-row"><div class="setting-label">Firmware</div><div class="setting-value">v2.0.0</div></div>
+      </div>
+      <div class="credit">ESP32 DAC Controller · Danny Liu</div>
+    </div>
+  </div><!-- /pages -->
+</div><!-- /app -->
+
+<div id="toast-area"></div>
+<audio id="audio-player" preload="none"></audio>
+
+<script>
+'use strict';
+
+/* ── Service Worker registration ─────────────────────── */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js')
+    .then(reg => console.log('[SW] registered, scope:', reg.scope))
+    .catch(err => console.warn('[SW] registration failed:', err));
+}
+
+/* ── State ───────────────────────────────────────────────── */
+let bleDevice=null,bleServer=null,bleTxChar=null,bleRxChar=null;
+let isMuted=false,upsampleRatio=8;
+let trackQueue=[],currentTrack=-1,isPlaying=false;
+let nasConfig=loadNASConfig(),nasServerType=nasConfig.type||'navidrome',nasToken=null,nasConnected=false;
+const audio=document.getElementById('audio-player');
+
+/* ── Navigation ──────────────────────────────────────────── */
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('visible'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===id));
+  document.getElementById('page-'+id).classList.add('visible');
+}
+
+/* ── BLE ─────────────────────────────────────────────────── */
+const SVC='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TX ='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const RX ='6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+
+async function toggleBLE(){
+  if(bleDevice&&bleDevice.gatt.connected){bleDevice.gatt.disconnect();return;}
+  if(!navigator.bluetooth){toast('Web Bluetooth not supported. Use Chrome on Android.','err');return;}
+  try{
+    toast('Scanning…','info');
+    bleDevice=await navigator.bluetooth.requestDevice({filters:[{services:[SVC]}],optionalServices:[SVC]});
+    bleDevice.addEventListener('gattserverdisconnected',onDisc);
+    bleServer=await bleDevice.gatt.connect();
+    const svc=await bleServer.getPrimaryService(SVC);
+    bleTxChar=await svc.getCharacteristic(TX);
+    bleRxChar=await svc.getCharacteristic(RX);
+    await bleTxChar.startNotifications();
+    bleTxChar.addEventListener('characteristicvaluechanged',onBLEData);
+    setBLEUI(true,bleDevice.name||'ESP32 DAC');
+    toast('Connected to '+(bleDevice.name||'device'),'ok');
+    sendAT('AT+STATUS');
+  }catch(e){toast('BLE error: '+e.message,'err');setBLEUI(false);}
+}
+function onDisc(){setBLEUI(false);toast('BLE disconnected','err');
+  setTimeout(()=>{if(bleDevice&&!bleDevice.gatt.connected)bleDevice.gatt.connect().catch(()=>{});},3000);}
+function onBLEData(ev){
+  const raw=new TextDecoder().decode(ev.target.value);
+  termAppend(raw,'rx');
+  try{const j=JSON.parse(raw.trim());if(j.inRate!==undefined)updateStatus(j);}catch(_){}
+}
+function setBLEUI(conn,name){
+  document.getElementById('ble-badge').textContent='● '+(conn?(name||'CONN'):'DISC');
+  document.getElementById('ble-badge').classList.toggle('connected',conn);
+  document.getElementById('hdr-connect').textContent=conn?'DISCONNECT':'CONNECT';
+  document.getElementById('set-ble-status').textContent=conn?'Connected':'Disconnected';
+  if(name)document.getElementById('set-ble-name').textContent=name;
+}
+async function sendAT(cmd){
+  if(!bleRxChar){toast('Not connected','err');return;}
+  try{await bleRxChar.writeValueWithoutResponse(new TextEncoder().encode(cmd+'\r\n'));termAppend('> '+cmd,'tx');}
+  catch(e){toast('Send error: '+e.message,'err');}
+}
+
+/* ── Status update from JSON ─────────────────────────────── */
+function updateStatus(j){
+  const fmtRate=r=>r>=1000?(r/1000).toFixed(r%1000?1:0)+' kHz':r+' Hz';
+  if(j.inRate!=null){
+    document.getElementById('st-inrate').textContent=fmtRate(j.inRate);
+    document.getElementById('info-inrate').textContent=fmtRate(j.inRate);
+  }
+  if(j.outRate!=null){
+    document.getElementById('st-outrate').textContent=fmtRate(j.outRate);
+    document.getElementById('info-outrate').textContent=fmtRate(j.outRate);
+  }
+  if(j.upsample!=null){
+    upsampleRatio=j.upsample;
+    const label=j.upsample===1?'OFF':j.upsample+'×';
+    document.getElementById('st-upsample').textContent=label;
+    document.getElementById('info-upsample').textContent=label;
+    syncRatioButtons(j.upsample);
+    updateChainDiagram(j.upsample,j.inRate||48000);
+    // Bit depth display
+    const bits=j.upsample>1?'32-bit':'16-bit';
+    document.getElementById('info-bits').textContent=bits;
+    document.getElementById('fir-bits-val').textContent=bits+' ('+label+')';
+  }
+  if(j.source){document.getElementById('st-source').textContent=j.source;document.getElementById('info-source').textContent=j.source;}
+  if(j.btName){document.getElementById('current-bt-name').textContent=j.btName;document.getElementById('set-ble-name').textContent=j.btName;}
+  if(j.mute!=null){isMuted=j.mute;refreshMuteUI();}
+  const muteEl=document.getElementById('st-mute');
+  muteEl.textContent=j.mute?'ON':'OFF';
+  muteEl.classList.toggle('warn',!!j.mute);
+}
+
+/* ── Mute ────────────────────────────────────────────────── */
+function toggleMute(){isMuted=!isMuted;refreshMuteUI();sendAT(isMuted?'AT+MUTE=ON':'AT+MUTE=OFF');}
+function refreshMuteUI(){
+  const b=document.getElementById('mute-btn');
+  b.classList.toggle('muted',isMuted);
+  b.textContent=isMuted?'⏸ MUTED — TAP TO UNMUTE':'▶ UNMUTED — AUDIO ACTIVE';
+}
+
+/* ── BT Name ─────────────────────────────────────────────── */
+function setBTName(){
+  const n=document.getElementById('bt-name-input').value.trim();
+  if(!n){toast('Enter a name','err');return;}
+  if(n.length>20){toast('Max 20 chars','err');return;}
+  sendAT('AT+BTNAME='+n);toast('Name queued. Restart device to apply.','info');
+}
+
+/* ── Upsampling controls ─────────────────────────────────── */
+function setUpsample(mode){
+  sendAT('AT+UPSAMPLE='+mode);
+  const r=mode==='OFF'?1:parseInt(mode);
+  syncRatioButtons(r);
+  const outRate=48000*(r===1?1:r);
+  updateChainDiagram(r,48000);
+  toast('Upsampling set to '+mode+'. Filter rebuilding on Core 0…','info');
+}
+function syncRatioButtons(r){
+  document.getElementById('rb-off').classList.toggle('selected',r===1);
+  document.getElementById('rb-4x').classList.toggle('selected',r===4);
+  document.getElementById('rb-8x').classList.toggle('selected',r===8);
+}
+function updateChainDiagram(r,inRate){
+  const fir=document.getElementById('chain-fir');
+  const out=document.getElementById('chain-out');
+  const outRate=inRate*r;
+  if(r===1){fir.textContent='Bypass\n(no FIR)';out.textContent=(inRate/1000)+'kHz\n16-bit';}
+  else{fir.textContent='FIR ×'+r+'\n'+(r*16)+'-tap';out.textContent=(outRate/1000)+'kHz\n32-bit';}
+}
+
+/* ── Terminal ────────────────────────────────────────────── */
+const term=document.getElementById('terminal');
+function termAppend(text,cls='rx'){
+  text.split(/\r?\n/).filter(Boolean).forEach(line=>{
+    const d=document.createElement('div');
+    d.className='term-'+cls;d.textContent=line;term.appendChild(d);
+  });
+  term.scrollTop=term.scrollHeight;
+}
+function sendTerminal(){
+  const inp=document.getElementById('term-input');
+  const cmd=('AT'+inp.value.trim()).toUpperCase();inp.value='';sendAT(cmd);
+}
+function quickCmd(cmd){termAppend('> '+cmd,'tx');sendAT(cmd);}
+function clearTerminal(){term.innerHTML='<div class="term-sys">— Terminal cleared —</div>';}
+
+/* ── Quick actions ───────────────────────────────────────── */
+function confirmRestart(){if(confirm('Restart the ESP32-S3?'))sendAT('AT+RESTART');}
+
+/* ── NAS / Subsonic ──────────────────────────────────────── */
+function loadNASConfig(){try{return JSON.parse(localStorage.getItem('nas_cfg')||'{}');}catch{return{};}}
+function saveNASConfig(){
+  const cfg={url:document.getElementById('nas-url').value.trim(),
+             user:document.getElementById('nas-user').value.trim(),
+             pass:document.getElementById('nas-pass').value,type:nasServerType};
+  localStorage.setItem('nas_cfg',JSON.stringify(cfg));nasConfig=cfg;
+  document.getElementById('set-nas-server').textContent=cfg.url||'—';
+  document.getElementById('set-nas-type').textContent=cfg.type||'—';
+}
+function clearNASConfig(){localStorage.removeItem('nas_cfg');nasConfig={};toast('NAS config cleared','info');}
+function restoreNASForm(){
+  if(nasConfig.url)document.getElementById('nas-url').value=nasConfig.url;
+  if(nasConfig.user)document.getElementById('nas-user').value=nasConfig.user;
+  if(nasConfig.type)setServerType(nasConfig.type);
+  if(nasConfig.url){document.getElementById('set-nas-server').textContent=nasConfig.url;
+    document.getElementById('set-nas-type').textContent=nasConfig.type||'—';}
+}
+function setServerType(t){
+  nasServerType=t;
+  ['navidrome','jellyfin','subsonic'].forEach(id=>{
+    document.getElementById('type-'+id).classList.toggle('btn-primary',id===t);
+    document.getElementById('type-'+id).classList.toggle('btn-ghost',id!==t);
+  });
+}
+function subToken(pass){const salt=Math.random().toString(36).substring(2,8);return{salt,token:md5(pass+salt)};}
+function subURL(ep,p={}){
+  const cfg=nasConfig,base=cfg.url.replace(/\/$/,'');
+  const{salt,token}=subToken(cfg.pass||'');
+  return`${base}/rest/${ep}?${new URLSearchParams({u:cfg.user,t:token,s:salt,v:'1.16.1',c:'ESP32DAC',f:'json',...p})}`;
+}
+async function connectNAS(){
+  const url=document.getElementById('nas-url').value.trim();
+  const user=document.getElementById('nas-user').value.trim();
+  if(!url||!user){toast('Enter server URL and username','err');return;}
+  saveNASConfig();
+  if(nasServerType==='jellyfin'){await connectJellyfin(url,user,document.getElementById('nas-pass').value);}
+  else await connectSubsonic();
+}
+async function connectSubsonic(){
+  try{
+    const r=await fetch(subURL('ping'));const d=await r.json();
+    if(d['subsonic-response']?.status==='ok'){nasConnected=true;toast('Connected!','ok');
+      document.getElementById('search-card').style.display='block';nasGetRecent();}
+    else toast('Server: '+(d['subsonic-response']?.error?.message||'Unknown error'),'err');
+  }catch(e){toast('Connection failed: '+e.message,'err');}
+}
+async function connectJellyfin(url,user,pass){
+  try{
+    const r=await fetch(url.replace(/\/$/,'')+'/Users/AuthenticateByName',{
+      method:'POST',headers:{'Content-Type':'application/json',
+        'X-Emby-Authorization':'MediaBrowser Client="ESP32DAC",Device="PWA",DeviceId="1",Version="1.0"'},
+      body:JSON.stringify({Username:user,Pw:pass})});
+    const d=await r.json();
+    if(d.AccessToken){nasToken=d.AccessToken;nasConnected=true;toast('Jellyfin connected!','ok');
+      document.getElementById('search-card').style.display='block';nasGetRecent();}
+    else toast('Jellyfin auth failed','err');
+  }catch(e){toast('Jellyfin: '+e.message,'err');}
+}
+async function nasSearch(){
+  const q=document.getElementById('nas-search').value.trim();
+  if(!q){toast('Enter search term','err');return;}
+  if(nasServerType==='jellyfin')await jfSearch(q);else await subSearch(q);
+}
+async function subSearch(q){
+  try{const r=await fetch(subURL('search3',{query:q,songCount:50,albumCount:0,artistCount:0}));
+    const d=await r.json();
+    renderTracks((d['subsonic-response']?.searchResult3?.song||[]).map(s=>subTrack(s)),'Search: '+q);
+  }catch(e){toast('Search: '+e.message,'err');}
+}
+function subTrack(s){return{id:s.id,title:s.title,artist:s.artist,album:s.album,duration:s.duration,
+  streamUrl:subURL('stream',{id:s.id,format:'mp3',maxBitRate:320})};}
+async function nasGetRecent(){
+  if(!nasConnected)return;
+  if(nasServerType==='jellyfin'){await jfRecent();return;}
+  try{const r=await fetch(subURL('getRandomSongs',{size:30}));
+    const d=await r.json();
+    renderTracks((d['subsonic-response']?.randomSongs?.song||[]).map(s=>subTrack(s)),'Recent');
+  }catch(e){toast('Recent: '+e.message,'err');}
+}
+async function nasGetRandom(){
+  if(!nasConnected){toast('Not connected to NAS','err');return;}
+  try{const r=await fetch(subURL('getRandomSongs',{size:30}));
+    const d=await r.json();
+    renderTracks((d['subsonic-response']?.randomSongs?.song||[]).map(s=>subTrack(s)),'Random');
+  }catch(e){toast('Random: '+e.message,'err');}
+}
+async function nasGetStarred(){
+  if(!nasConnected){toast('Not connected to NAS','err');return;}
+  try{const r=await fetch(subURL('getStarred2'));
+    const d=await r.json();
+    renderTracks((d['subsonic-response']?.starred2?.song||[]).map(s=>subTrack(s)),'Starred ★');
+  }catch(e){toast('Starred: '+e.message,'err');}
+}
+async function jfSearch(q){
+  try{const cfg=nasConfig,base=cfg.url.replace(/\/$/,'');
+    const r=await fetch(`${base}/Items?searchTerm=${encodeURIComponent(q)}&IncludeItemTypes=Audio&Recursive=true&api_key=${nasToken}&Limit=50`);
+    const d=await r.json();renderTracks((d.Items||[]).map(it=>jfTrack(it,base)),'Search: '+q);
+  }catch(e){toast('JF search: '+e.message,'err');}
+}
+async function jfRecent(){
+  try{const cfg=nasConfig,base=cfg.url.replace(/\/$/,'');
+    const r=await fetch(`${base}/Items?SortBy=DateCreated&SortOrder=Descending&IncludeItemTypes=Audio&Recursive=true&api_key=${nasToken}&Limit=30`);
+    const d=await r.json();renderTracks((d.Items||[]).map(it=>jfTrack(it,base)),'Recent');
+  }catch(e){toast('JF recent: '+e.message,'err');}
+}
+function jfTrack(it,base){return{id:it.Id,title:it.Name,artist:(it.Artists||[]).join(', ')||'—',
+  album:it.Album||'—',duration:Math.round((it.RunTimeTicks||0)/10000000),
+  streamUrl:`${base}/Audio/${it.Id}/stream?api_key=${nasToken}&AudioCodec=mp3`};}
+
+function renderTracks(tracks,heading){
+  trackQueue=tracks;
+  const list=document.getElementById('track-list');
+  const card=document.getElementById('tracks-card');
+  document.getElementById('tracks-heading').textContent=heading+' ('+tracks.length+')';
+  list.innerHTML='';card.style.display=tracks.length?'block':'none';
+  tracks.forEach((t,i)=>{
+    const div=document.createElement('div');div.className='track-item';div.id='track-'+i;
+    div.innerHTML=`<div class="play-eq"><div class="eq-bar" style="height:5px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div>
+      <div class="track-num">${i+1}</div>
+      <div class="track-info"><div class="track-title">${esc(t.title)}</div><div class="track-meta">${esc(t.artist)} · ${esc(t.album)}</div></div>
+      <div class="track-dur">${t.duration?fmtTime(t.duration):'—'}</div>`;
+    div.onclick=()=>playTrack(i);list.appendChild(div);
+  });
+}
+
+/* ── Audio player ────────────────────────────────────────── */
+audio.addEventListener('timeupdate',()=>{
+  if(!audio.duration)return;
+  document.getElementById('player-seek').value=(audio.currentTime/audio.duration)*100;
+  document.getElementById('player-time').textContent=fmtTime(audio.currentTime)+' / '+fmtTime(audio.duration);
+});
+audio.addEventListener('ended',()=>playerNext());
+audio.addEventListener('play',()=>{isPlaying=true;refreshPP();});
+audio.addEventListener('pause',()=>{isPlaying=false;refreshPP();});
+function playTrack(i){
+  if(i<0||i>=trackQueue.length)return;currentTrack=i;
+  const t=trackQueue[i];audio.src=t.streamUrl;
+  audio.play().catch(e=>toast('Playback: '+e.message,'err'));
+  document.getElementById('player-title').textContent=t.title;
+  document.getElementById('player-artist').textContent=t.artist+' · '+t.album;
+  document.getElementById('mini-player').classList.add('visible');
+  document.querySelectorAll('.track-item').forEach((el,j)=>el.classList.toggle('playing',j===i));
+  document.getElementById('track-'+i)?.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function playerToggle(){if(!audio.src)return;isPlaying?audio.pause():audio.play();}
+function playerPrev(){if(currentTrack>0)playTrack(currentTrack-1);}
+function playerNext(){if(currentTrack<trackQueue.length-1)playTrack(currentTrack+1);}
+function playerSeek(p){if(audio.duration)audio.currentTime=(p/100)*audio.duration;}
+function refreshPP(){document.getElementById('pp-icon').innerHTML=isPlaying?'<path d="M6 19h4V5H6zm8-14v14h4V5z"/>':'<path d="M8 5v14l11-7z"/>';}
+
+/* ── Utilities ───────────────────────────────────────────── */
+function fmtTime(s){s=Math.floor(s);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function toast(msg,type='info',dur=3500){
+  const a=document.getElementById('toast-area');
+  const d=document.createElement('div');d.className='toast '+type;d.textContent=msg;a.appendChild(d);
+  setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .4s';setTimeout(()=>d.remove(),400);},dur);
+}
+
+/* ── MD5 for Subsonic token ──────────────────────────────── */
+function md5(str){function safeAdd(x,y){var lsw=(x&0xffff)+(y&0xffff);var msw=(x>>16)+(y>>16)+(lsw>>16);return(msw<<16)|(lsw&0xffff);}function bitRotateLeft(num,cnt){return(num<<cnt)|(num>>>(32-cnt));}function md5cmn(q,a,b,x,s,t){return safeAdd(bitRotateLeft(safeAdd(safeAdd(a,q),safeAdd(x,t)),s),b);}function md5ff(a,b,c,d,x,s,t){return md5cmn((b&c)|((~b)&d),a,b,x,s,t);}function md5gg(a,b,c,d,x,s,t){return md5cmn((b&d)|(c&(~d)),a,b,x,s,t);}function md5hh(a,b,c,d,x,s,t){return md5cmn(b^c^d,a,b,x,s,t);}function md5ii(a,b,c,d,x,s,t){return md5cmn(c^(b|(~d)),a,b,x,s,t);}function calc(x,len){x[len>>5]|=0x80<<((len)%32);x[(((len+64)>>>9)<<4)+14]=len;var i,olda,oldb,oldc,oldd,a=1732584193,b=-271733879,c=-1732584194,d=271733878;for(i=0;i<x.length;i+=16){olda=a;oldb=b;oldc=c;oldd=d;a=md5ff(a,b,c,d,x[i],7,-680876936);d=md5ff(d,a,b,c,x[i+1],12,-389564586);c=md5ff(c,d,a,b,x[i+2],17,606105819);b=md5ff(b,c,d,a,x[i+3],22,-1044525330);a=md5ff(a,b,c,d,x[i+4],7,-176418897);d=md5ff(d,a,b,c,x[i+5],12,1200080426);c=md5ff(c,d,a,b,x[i+6],17,-1473231341);b=md5ff(b,c,d,a,x[i+7],22,-45705983);a=md5ff(a,b,c,d,x[i+8],7,1770035416);d=md5ff(d,a,b,c,x[i+9],12,-1958414417);c=md5ff(c,d,a,b,x[i+10],17,-42063);b=md5ff(b,c,d,a,x[i+11],22,-1990404162);a=md5ff(a,b,c,d,x[i+12],7,1804603682);d=md5ff(d,a,b,c,x[i+13],12,-40341101);c=md5ff(c,d,a,b,x[i+14],17,-1502002290);b=md5ff(b,c,d,a,x[i+15],22,1236535329);a=md5gg(a,b,c,d,x[i+1],5,-165796510);d=md5gg(d,a,b,c,x[i+6],9,-1069501632);c=md5gg(c,d,a,b,x[i+11],14,643717713);b=md5gg(b,c,d,a,x[i],20,-373897302);a=md5gg(a,b,c,d,x[i+5],5,-701558691);d=md5gg(d,a,b,c,x[i+10],9,38016083);c=md5gg(c,d,a,b,x[i+15],14,-660478335);b=md5gg(b,c,d,a,x[i+4],20,-405537848);a=md5gg(a,b,c,d,x[i+9],5,568446438);d=md5gg(d,a,b,c,x[i+14],9,-1019803690);c=md5gg(c,d,a,b,x[i+3],14,-187363961);b=md5gg(b,c,d,a,x[i+8],20,1163531501);a=md5gg(a,b,c,d,x[i+13],5,-1444681467);d=md5gg(d,a,b,c,x[i+2],9,-51403784);c=md5gg(c,d,a,b,x[i+7],14,1735328473);b=md5gg(b,c,d,a,x[i+12],20,-1926607734);a=md5hh(a,b,c,d,x[i+5],4,-378558);d=md5hh(d,a,b,c,x[i+8],11,-2022574463);c=md5hh(c,d,a,b,x[i+11],16,1839030562);b=md5hh(b,c,d,a,x[i+14],23,-35309556);a=md5hh(a,b,c,d,x[i+1],4,-1530992060);d=md5hh(d,a,b,c,x[i+4],11,1272893353);c=md5hh(c,d,a,b,x[i+7],16,-155497632);b=md5hh(b,c,d,a,x[i+10],23,-1094730640);a=md5hh(a,b,c,d,x[i+13],4,681279174);d=md5hh(d,a,b,c,x[i],11,-358537222);c=md5hh(c,d,a,b,x[i+3],16,-722521979);b=md5hh(b,c,d,a,x[i+6],23,76029189);a=md5hh(a,b,c,d,x[i+9],4,-640364487);d=md5hh(d,a,b,c,x[i+12],11,-421815835);c=md5hh(c,d,a,b,x[i+15],16,530742520);b=md5hh(b,c,d,a,x[i+2],23,-995338651);a=md5ii(a,b,c,d,x[i],6,-198630844);d=md5ii(d,a,b,c,x[i+7],10,1126891415);c=md5ii(c,d,a,b,x[i+14],15,-1416354905);b=md5ii(b,c,d,a,x[i+5],21,-57434055);a=md5ii(a,b,c,d,x[i+12],6,1700485571);d=md5ii(d,a,b,c,x[i+3],10,-1894986606);c=md5ii(c,d,a,b,x[i+10],15,-1051523);b=md5ii(b,c,d,a,x[i+1],21,-2054922799);a=md5ii(a,b,c,d,x[i+8],6,1873313359);d=md5ii(d,a,b,c,x[i+15],10,-30611744);c=md5ii(c,d,a,b,x[i+6],15,-1560198380);b=md5ii(b,c,d,a,x[i+13],21,1309151649);a=md5ii(a,b,c,d,x[i+4],6,-145523070);d=md5ii(d,a,b,c,x[i+11],10,-1120210379);c=md5ii(c,d,a,b,x[i+2],15,718787259);b=md5ii(b,c,d,a,x[i+9],21,-343485551);a=safeAdd(a,olda);b=safeAdd(b,oldb);c=safeAdd(c,oldc);d=safeAdd(d,oldd);}return[a,b,c,d];}function str2binl(s){var o={};for(var i=0;i<s.length*8;i+=8){o[i>>5]|=(s.charCodeAt(i/8)&0xff)<<(i%32);}return o;}function binl2hex(b){var h='0123456789abcdef',s='';for(var i=0;i<b.length*4;i++){s+=h.charAt((b[Math.floor(i/4)]>>((i%4)*8+4))&0xf)+h.charAt((b[Math.floor(i/4)]>>((i%4)*8))&0xf);}return s;}return binl2hex(calc(Object.assign({},str2binl(str)),str.length*8));}
+
+/* ── Init ────────────────────────────────────────────────── */
+restoreNASForm();
+setServerType(nasServerType);
+syncRatioButtons(8);
+updateChainDiagram(8,48000);
+refreshMuteUI();
+</script>
+</body>
+</html>
